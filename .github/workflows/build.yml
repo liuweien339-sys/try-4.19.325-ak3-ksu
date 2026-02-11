@@ -26,8 +26,8 @@ jobs:
 
       - name: 克隆gauguin专用内核源码
         run: |
-          git clone --depth=1 https://github.com/LineageOS/android_kernel_xiaomi_gauguin.git -b lineage-23.1 kernel
-          cd kernel
+          git clone --depth=1 https://github.com/LineageOS/android_kernel_xiaomi_gauguin.git -b lineage-23.2
+          cd $HOME/android_kernel_xiaomi_gauguin
 
       - name: 集成SukiSU-Ultra（修正ksu.c/ksu.h版本）
         run: |
