@@ -16,7 +16,9 @@ jobs:
           sudo apt update
           sudo apt install -y git ccache flex bison build-essential libssl-dev \
             libncurses-dev xz-utils zstd libelf-dev bc cpio python3 \
-            gcc-aarch64-linux-gnu llvm-ar llvm-objdump llvm-dev llvm-runtime llvm-tools llvn-nm
+            gcc-aarch64-linux-gnu \
+            clang-14 llvm-14 lld-14 llvm-14-dev llvm-14-tools \
+            libclang-14-dev
 
       - name: 启用ccache加速
         uses: hendrikmuhs/ccache-action@v1.2
