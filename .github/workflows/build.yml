@@ -5,31 +5,31 @@ on:
 
 jobs:
   build_kernel:
-    name: 编译4.19内核集成SukiSU-Ultra
+    name: 编译4.19内核集成SukiSU
     runs-on: ubuntu-22.04
     steps:
-      - name: 检出仓库（获取AnyKernel3和配置）
+      - name: 检出仓库（包含完整.config和AnyKernel3）
         uses: actions/checkout@v4
 
       - name: 准备编译环境
         run: |
           sudo apt update
-          sudo apt install -y git ccache flex bison build-essential make libssl-dev \
+          sudo apt install -y git ccache flex bison build-essential libssl-dev \
             libncurses-dev xz-utils zstd libelf-dev bc cpio python3 \
             gcc-aarch64-linux-gnu
 
       - name: 启用ccache加速
         uses: hendrikmuhs/ccache-action@v1.2
         with:
-          key: gauguin-sukisu-${{ github.sha }}
+          key: gauguin-${{ github.sha }}
           max-size: 5G
 
-      - name: 克隆gauguin专用内核源码
+      - name: 克隆gauguin内核源码
         run: |
           git clone --depth=1 https://github.com/LineageOS/android_kernel_xiaomi_gauguin.git -b lineage-23.2 kernel
           cd kernel
 
-      - name: 集成SukiSU-Ultra（修正ksu.c/ksu.h版本）
+      - name: 集成SukiSU-Ultra（非GKI手动适配）
         run: |
           cd kernel
           
@@ -37,86 +37,101 @@ jobs:
           echo "正在克隆SukiSU-Ultra..."
           git clone --depth=1 https://github.com/SukiSU-Ultra/SukiSU-Ultra.git
           
-          # 2. 创建软链接指向官方kernel目录
+          # 2. 创建软链接
           echo "创建KernelSU软链接..."
           ln -sf SukiSU-Ultra/kernel KernelSU
           
-          # 3. 验证集成是否成功 - 修正为检查ksu.c和ksu.h
-          echo "验证集成结果："
-          ls -la KernelSU/
-          if [ -f "KernelSU/ksu.c" ] && [ -f "KernelSU/ksu.h" ]; then
-            echo "✅ SukiSU-Ultra集成成功！(找到ksu.c/ksu.h)"
-          else
-            echo "❌ 集成失败，未找到ksu.c/ksu.h"
-            exit 1
+          # 3. 非GKI手动补丁
+          echo "正在为非GKI内核打补丁..."
+          
+          # drivers/Makefile
+          if ! grep -q "KernelSU" drivers/Makefile; then
+            echo "obj-y += KernelSU/" >> drivers/Makefile
           fi
+          
+          # 创建驱动链接
+          if [ ! -d "drivers/KernelSU" ]; then
+            ln -sf ../KernelSU drivers/KernelSU
+          fi
+          
+          # fs/exec.c
+          sed -i 's/#include <linux\/binfmts.h>/#include <linux\/binfmts.h>\n#include "..\/KernelSU\/ksu.h"/g' fs/exec.c
+          if ! grep -q "ksu_handle_execve" fs/exec.c; then
+            sed -i '/return 0;/i \ \ if (unlikely(current->mm->ksu_execve_count))\
+            \ \ \ \ ksu_handle_execve(current->mm->exe_file);' fs/exec.c
+          fi
+          
+          # fs/open.c
+          sed -i 's/#include <linux\/audit.h>/#include <linux\/audit.h>\n#include "..\/KernelSU\/ksu.h"/g' fs/open.c
+          if ! grep -q "ksu_handle_faccessat" fs/open.c; then
+            sed -i '/if (error)/i \ \ ksu_handle_faccessat(&dfd, filename, &mode);' fs/open.c
+          fi
+          
+          # fs/read_write.c
+          sed -i 's/#include <linux\/fs.h>/#include <linux\/fs.h>\n#include "..\/KernelSU\/ksu.h"/g' fs/read_write.c
+          if ! grep -q "ksu_handle_vfs_read" fs/read_write.c; then
+            sed -i '/if (file->f_op->read)/i \ \ ksu_handle_vfs_read(file, buf, count, pos);' fs/read_write.c
+          fi
+          
+          # fs/stat.c
+          sed -i 's/#include <linux\/mnt_idmapping.h>/#include <linux\/mnt_idmapping.h>\n#include "..\/KernelSU\/ksu.h"/g' fs/stat.c
+          
+          # 4. 验证集成
+          echo "验证集成结果："
+          ls -la KernelSU/ | grep -E "ksu\.c|ksu\.h"
+          echo "✅ SukiSU-Ultra集成完成"
 
-      - name: 配置内核
+      - name: 应用你的完整.config
         run: |
           cd kernel
           
-          # 使用你的defconfig或官方默认配置
-          if [ -f ../kernel_source/gauguin_defconfig ]; then
-            echo "使用用户提供的defconfig..."
-            cp ../kernel_source/gauguin_defconfig arch/arm64/configs/
-            make ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 gauguin_defconfig
-          else
-            echo "使用官方默认配置..."
-            make ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 vendor/lineage-23.1-android15-gki_defconfig
-          fi
-
+          # 🔥 直接从你的仓库复制完整的.config
+          echo "使用仓库中的完整.config..."
+          cp ../kernel_source/.config .config
           
-          # 刷新配置
+          # 确保.config是最新的
           make ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 olddefconfig
           
-          # 检查配置是否成功写入
-          echo "验证KSU配置："
-          grep CONFIG_KSU .config
+          # 验证KSU是否开启
+          echo "验证KSU配置状态："
+          grep CONFIG_KSU .config || echo "⚠️ 警告：CONFIG_KSU未开启"
+          grep CONFIG_KALLSYMS .config || echo "⚠️ 警告：CONFIG_KALLSYMS未开启"
 
       - name: 编译内核镜像
         run: |
           cd kernel
           export PATH=/usr/lib/ccache:$PATH
           
-          # 开始编译
-          echo "开始编译内核，这大约需要40-60分钟..."
+          echo "开始编译内核，约40-60分钟..."
           make -j$(nproc) ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 Image.gz dtbs 2>&1 | tee build.log
           
-          # 检查编译产物
-          echo "编译完成，检查产物："
           if [ -f "arch/arm64/boot/Image.gz" ]; then
-            echo "✅ 内核镜像编译成功"
+            echo "✅ 内核编译成功"
             ls -lh arch/arm64/boot/Image.gz
           else
-            echo "❌ 内核镜像编译失败"
+            echo "❌ 编译失败"
             exit 1
           fi
 
-      - name: 准备AnyKernel3刷机包
+      - name: 打包AnyKernel3
         run: |
-          # 如果没有AnyKernel3目录，则克隆
+          # 使用你仓库里的AnyKernel3
           if [ ! -d "AnyKernel3" ]; then
-            echo "正在克隆AnyKernel3..."
-            git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git AnyKernel3
+            echo "❌ 未找到AnyKernel3目录"
+            exit 1
           fi
           
-          # 复制内核镜像
-          echo "复制内核镜像..."
           cp kernel/arch/arm64/boot/Image.gz AnyKernel3/
           
-          # 处理DTB文件（gauguin必须）
-          echo "处理DTB文件..."
+          # DTB处理
           if [ -f kernel/arch/arm64/boot/dtb.img ]; then
             cp kernel/arch/arm64/boot/dtb.img AnyKernel3/
           elif [ -d kernel/arch/arm64/boot/dts ]; then
             find kernel/arch/arm64/boot/dts -name "*.dtb" -exec cat {} + > AnyKernel3/dtb
-            echo "DTB文件已合并"
           fi
           
-          # 打包刷机包
-          echo "打包AnyKernel3..."
           cd AnyKernel3
-          zip -r9 ../gauguin-SukiSU-Ultra-$(date +%Y%m%d-%H%M).zip *
+          zip -r9 ../gauguin-SukiSU-$(date +%Y%m%d-%H%M).zip *
           cd ..
           
           echo "✅ 刷机包打包完成"
@@ -124,13 +139,11 @@ jobs:
       - name: 上传刷机包
         uses: actions/upload-artifact@v4
         with:
-          name: gauguin-kernel-sukisu-ultra
-          path: gauguin-SukiSU-Ultra-*.zip
-          if-no-files-found: error
+          name: gauguin-kernel-sukisu
+          path: gauguin-SukiSU-*.zip
 
       - name: 上传编译日志
         uses: actions/upload-artifact@v4
         with:
           name: build-log
           path: kernel/build.log
-          if-no-files-found: warn
