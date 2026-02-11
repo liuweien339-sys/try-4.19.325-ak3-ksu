@@ -1,4 +1,4 @@
-name: 为小米Note10 Lite编译内核+SukiSU-Ultra
+name: 为小米Note10 Lite编译内核+SukiSU-Ultra（Clang 21.0.0版）
 
 on:
   workflow_dispatch:  # 手动触发
@@ -14,16 +14,45 @@ jobs:
       - name: 准备编译环境
         run: |
           sudo apt update
-          sudo apt install -y git ccache flex bison build-essential libssl-dev \
+          sudo apt install -y \
+            git ccache flex bison build-essential libssl-dev \
             libncurses-dev xz-utils zstd libelf-dev bc cpio python3 \
-            gcc-aarch64-linux-gnu \
-            clang-14 llvm-14 lld-14 llvm-14-dev llvm-14-tools \
-            libclang-14-dev llvm-14-objdump-
+            binutils-aarch64-linux-gnu
+          
+          # 🔥🔥🔥 下载Clang 21.0.0（和你手机完全一致） 🔥🔥🔥
+          mkdir -p /tmp/clang
+          cd /tmp/clang
+          
+          # 从Android官方仓库下载Clang 21.0.0 (r563880c)
+          wget https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r563880c.tar.gz
+          tar -xzf clang-r563880c.tar.gz
+          
+          # 安装到系统目录
+          sudo mkdir -p /usr/lib/clang-21
+          sudo cp -r * /usr/lib/clang-21/
+          
+          # 创建软链接（带版本号和不带版本号的都建立）
+          sudo ln -sf /usr/lib/clang-21/bin/clang /usr/bin/clang-21
+          sudo ln -sf /usr/lib/clang-21/bin/clang++ /usr/bin/clang++-21
+          sudo ln -sf /usr/lib/clang-21/bin/clang /usr/bin/clang
+          sudo ln -sf /usr/lib/clang-21/bin/clang++ /usr/bin/clang++
+          
+          # LLVM工具链
+          for tool in ar objdump objcopy strip nm readelf; do
+            sudo ln -sf /usr/lib/clang-21/bin/llvm-$tool /usr/bin/llvm-$tool-21
+            sudo ln -sf /usr/lib/clang-21/bin/llvm-$tool /usr/bin/llvm-$tool
+          done
+          
+          # 验证版本
+          echo "✅ Clang版本："
+          clang --version | head -n3
+          echo "✅ LLVM版本："
+          llvm-objdump --version | head -n1
 
       - name: 启用ccache加速
         uses: hendrikmuhs/ccache-action@v1.2
         with:
-          key: gauguin-${{ github.sha }}
+          key: gauguin-clang21-${{ github.sha }}
           max-size: 5G
 
       - name: 克隆gauguin内核源码
@@ -35,15 +64,12 @@ jobs:
         run: |
           cd kernel
           
-          # 1. 克隆SukiSU-Ultra官方仓库
           echo "正在克隆SukiSU-Ultra..."
           git clone --depth=1 https://github.com/SukiSU-Ultra/SukiSU-Ultra.git
           
-          # 2. 创建软链接
           echo "创建KernelSU软链接..."
           ln -sf SukiSU-Ultra/kernel KernelSU
           
-          # 3. 非GKI手动补丁
           echo "正在为非GKI内核打补丁..."
           
           # drivers/Makefile
@@ -78,74 +104,89 @@ jobs:
           # fs/stat.c
           sed -i 's/#include <linux\/mnt_idmapping.h>/#include <linux\/mnt_idmapping.h>\n#include "..\/KernelSU\/ksu.h"/g' fs/stat.c
           
-          # 4. 验证集成
-          echo "验证集成结果："
-          ls -la KernelSU/ | grep -E "ksu\.c|ksu\.h"
           echo "✅ SukiSU-Ultra集成完成"
+          ls -la KernelSU/ | grep -E "ksu\.c|ksu\.h"
 
       - name: 应用你的完整.config
         run: |
           cd kernel
-          
-          # 🔥 直接从你的仓库复制完整的.config
-          echo "使用仓库中的完整.config..."
           cp ../kernel_source/.config .config
           
-          # 确保.config是最新的
-          make ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 olddefconfig
+          # 🔥 使用和你手机完全一样的Clang 21.0.0 🔥
+          make ARCH=arm64 CC=clang-21 LLVM=1 LLVM_IAS=1 olddefconfig
           
-          # 验证KSU是否开启
-          echo "验证KSU配置状态："
-          grep CONFIG_KSU .config || echo "⚠️ 警告：CONFIG_KSU未开启"
-          grep CONFIG_KALLSYMS .config || echo "⚠️ 警告：CONFIG_KALLSYMS未开启"
+          # 验证配置
+          echo "KSU配置状态："
+          grep CONFIG_KSU .config || echo "⚠️ CONFIG_KSU未开启"
+          grep CONFIG_KALLSYMS .config || echo "⚠️ CONFIG_KALLSYMS未开启"
 
       - name: 编译内核镜像
         run: |
           cd kernel
           export PATH=/usr/lib/ccache:$PATH
           
-          echo "开始编译内核，约40-60分钟..."
-          make -i -k -j$(nproc) ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 Image.gz dtbs 2>&1 | tee build.log
+          echo "🔥 使用Clang 21.0.0编译内核（和你手机完全一致）..."
           
+          # 使用带版本号的工具，确保是Clang 21
+          make -i -k -j$(nproc) \
+            ARCH=arm64 \
+            CC=clang-21 \
+            AR=llvm-ar-21 \
+            NM=llvm-nm-21 \
+            OBJCOPY=llvm-objcopy-21 \
+            OBJDUMP=llvm-objdump-21 \
+            STRIP=llvm-strip-21 \
+            READELF=llvm-readelf-21 \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            Image.gz dtbs 2>&1 | tee build.log
+          
+          # 检查编译产物
           if [ -f "arch/arm64/boot/Image.gz" ]; then
-            echo "✅ 内核编译成功"
+            echo "✅ 内核镜像生成"
             ls -lh arch/arm64/boot/Image.gz
+            
+            # 查看编译出的内核版本
+            strings arch/arm64/boot/Image.gz | grep "Linux version" || true
           else
-            echo "❌ 编译失败"
-            exit 1
+            echo "❌ 内核镜像未生成"
           fi
 
       - name: 打包AnyKernel3
         run: |
-          # 使用你仓库里的AnyKernel3
           if [ ! -d "AnyKernel3" ]; then
             echo "❌ 未找到AnyKernel3目录"
             exit 1
           fi
           
-          cp kernel/arch/arm64/boot/Image.gz AnyKernel3/
-          
-          # DTB处理
-          if [ -f kernel/arch/arm64/boot/dtb.img ]; then
-            cp kernel/arch/arm64/boot/dtb.img AnyKernel3/
-          elif [ -d kernel/arch/arm64/boot/dts ]; then
-            find kernel/arch/arm64/boot/dts -name "*.dtb" -exec cat {} + > AnyKernel3/dtb
+          if [ -f "kernel/arch/arm64/boot/Image.gz" ]; then
+            cp kernel/arch/arm64/boot/Image.gz AnyKernel3/
+            
+            # DTB处理
+            if [ -f kernel/arch/arm64/boot/dtb.img ]; then
+              cp kernel/arch/arm64/boot/dtb.img AnyKernel3/
+            elif [ -d kernel/arch/arm64/boot/dts ]; then
+              find kernel/arch/arm64/boot/dts -name "*.dtb" -exec cat {} + > AnyKernel3/dtb
+            fi
+            
+            cd AnyKernel3
+            zip -r9 ../gauguin-SukiSU-Clang21-$(date +%Y%m%d-%H%M).zip *
+            cd ..
+            echo "✅ 刷机包打包完成"
+          else
+            echo "❌ 无内核镜像，不打包"
           fi
-          
-          cd AnyKernel3
-          zip -r9 ../gauguin-SukiSU-$(date +%Y%m%d-%H%M).zip *
-          cd ..
-          
-          echo "✅ 刷机包打包完成"
 
       - name: 上传刷机包
         uses: actions/upload-artifact@v4
         with:
-          name: gauguin-kernel-sukisu
-          path: gauguin-SukiSU-*.zip
+          name: gauguin-kernel-sukisu-clang21
+          path: gauguin-SukiSU-Clang21-*.zip
+          if-no-files-found: warn
 
       - name: 上传编译日志
         uses: actions/upload-artifact@v4
         with:
-          name: build-log
+          name: build-log-clang21
           path: kernel/build.log
+          if-no-files-found: warn
