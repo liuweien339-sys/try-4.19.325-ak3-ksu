@@ -1,1 +1,136 @@
+name: 为小米Note10 Lite编译内核+SukiSU-Ultra
 
+on:
+  workflow_dispatch:  # 手动触发
+
+jobs:
+  build_kernel:
+    name: 编译4.19内核集成SukiSU-Ultra
+    runs-on: ubuntu-22.04
+    steps:
+      - name: 检出仓库（获取AnyKernel3和配置）
+        uses: actions/checkout@v4
+
+      - name: 准备编译环境
+        run: |
+          sudo apt update
+          sudo apt install -y git ccache flex bison build-essential make libssl-dev \
+            libncurses-dev xz-utils zstd libelf-dev bc cpio python3 \
+            gcc-aarch64-linux-gnu
+
+      - name: 启用ccache加速
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: gauguin-sukisu-${{ github.sha }}
+          max-size: 5G
+
+      - name: 克隆gauguin专用内核源码
+        run: |
+          git clone --depth=1 https://github.com/LineageOS/android_kernel_xiaomi_gauguin.git -b lineage-23.1 kernel
+          cd kernel
+
+      - name: 集成SukiSU-Ultra（修正ksu.c/ksu.h版本）
+        run: |
+          cd kernel
+          
+          # 1. 克隆SukiSU-Ultra官方仓库
+          echo "正在克隆SukiSU-Ultra..."
+          git clone --depth=1 https://github.com/SukiSU-Ultra/SukiSU-Ultra.git
+          
+          # 2. 创建软链接指向官方kernel目录
+          echo "创建KernelSU软链接..."
+          ln -sf SukiSU-Ultra/kernel KernelSU
+          
+          # 3. 验证集成是否成功 - 修正为检查ksu.c和ksu.h
+          echo "验证集成结果："
+          ls -la KernelSU/
+          if [ -f "KernelSU/ksu.c" ] && [ -f "KernelSU/ksu.h" ]; then
+            echo "✅ SukiSU-Ultra集成成功！(找到ksu.c/ksu.h)"
+          else
+            echo "❌ 集成失败，未找到ksu.c/ksu.h"
+            exit 1
+          fi
+
+      - name: 配置内核
+        run: |
+          cd kernel
+          
+          # 使用你的defconfig或官方默认配置
+          if [ -f ../kernel_source/gauguin_defconfig ]; then
+            echo "使用用户提供的defconfig..."
+            cp ../kernel_source/gauguin_defconfig arch/arm64/configs/
+            make ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 gauguin_defconfig
+          else
+            echo "使用官方默认配置..."
+            make ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 vendor/lineage-23.1-android15-gki_defconfig
+          fi
+
+          
+          # 刷新配置
+          make ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 olddefconfig
+          
+          # 检查配置是否成功写入
+          echo "验证KSU配置："
+          grep CONFIG_KSU .config
+
+      - name: 编译内核镜像
+        run: |
+          cd kernel
+          export PATH=/usr/lib/ccache:$PATH
+          
+          # 开始编译
+          echo "开始编译内核，这大约需要40-60分钟..."
+          make -j$(nproc) ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 Image.gz dtbs 2>&1 | tee build.log
+          
+          # 检查编译产物
+          echo "编译完成，检查产物："
+          if [ -f "arch/arm64/boot/Image.gz" ]; then
+            echo "✅ 内核镜像编译成功"
+            ls -lh arch/arm64/boot/Image.gz
+          else
+            echo "❌ 内核镜像编译失败"
+            exit 1
+          fi
+
+      - name: 准备AnyKernel3刷机包
+        run: |
+          # 如果没有AnyKernel3目录，则克隆
+          if [ ! -d "AnyKernel3" ]; then
+            echo "正在克隆AnyKernel3..."
+            git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git AnyKernel3
+          fi
+          
+          # 复制内核镜像
+          echo "复制内核镜像..."
+          cp kernel/arch/arm64/boot/Image.gz AnyKernel3/
+          
+          # 处理DTB文件（gauguin必须）
+          echo "处理DTB文件..."
+          if [ -f kernel/arch/arm64/boot/dtb.img ]; then
+            cp kernel/arch/arm64/boot/dtb.img AnyKernel3/
+          elif [ -d kernel/arch/arm64/boot/dts ]; then
+            find kernel/arch/arm64/boot/dts -name "*.dtb" -exec cat {} + > AnyKernel3/dtb
+            echo "DTB文件已合并"
+          fi
+          
+          # 打包刷机包
+          echo "打包AnyKernel3..."
+          cd AnyKernel3
+          zip -r9 ../gauguin-SukiSU-Ultra-$(date +%Y%m%d-%H%M).zip *
+          cd ..
+          
+          echo "✅ 刷机包打包完成"
+
+      - name: 上传刷机包
+        uses: actions/upload-artifact@v4
+        with:
+          name: gauguin-kernel-sukisu-ultra
+          path: gauguin-SukiSU-Ultra-*.zip
+          if-no-files-found: error
+
+      - name: 上传编译日志
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: kernel/build.log
+          if-no-files-found: warn
