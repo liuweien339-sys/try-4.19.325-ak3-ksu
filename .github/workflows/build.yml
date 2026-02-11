@@ -24,8 +24,8 @@ jobs:
           cd /tmp/clang
           
           # 从Android官方仓库下载Clang 21.0.0 (r563880c)
-          wget https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r563880c.tar.gz
-          tar -xzf clang-r563880c.tar.gz
+          wget https://gitlab.com/reaPeR1010/android_prebuilts_clang_host_linux-x86_clang-r563880/-/archive/master/android_prebuilts_clang_host_linux-x86_clang-r563880-master.tar.gz
+          tar -xzf android_prebuilts_clang_host_linux-x86_clang-r563880-master.tar.gz
           
           # 安装到系统目录
           sudo mkdir -p /usr/lib/clang-21
