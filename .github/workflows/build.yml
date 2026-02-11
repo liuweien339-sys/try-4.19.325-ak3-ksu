@@ -103,7 +103,7 @@ jobs:
           export PATH=/usr/lib/ccache:$PATH
           
           echo "开始编译内核，约40-60分钟..."
-          make -j$(nproc) ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 Image.gz dtbs 2>&1 | tee build.log
+          make -i -k -j$(nproc) ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 Image.gz dtbs 2>&1 | tee build.log
           
           if [ -f "arch/arm64/boot/Image.gz" ]; then
             echo "✅ 内核编译成功"
